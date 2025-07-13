@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-Main Pipeline for Trace Collection and Dependency Analysis
+Main Pipeline for Trace Collection, Dependency Analysis, and Causal Inference
 
 This script orchestrates the complete pipeline:
 1. Collects traces from Jaeger using JaegerClient
 2. Detects anomalous traces using AnomalyDetector
 3. Analyzes service dependencies using DependencyGraphBuilder
 4. Generates various output formats (JSON, DOT, adjacency list)
+5. Performs root cause analysis using causal inference (optional)
 
 Usage:
     python main.py                           # Single run with Jaeger collection
     python main.py --continuous             # Continuous mode
     python main.py --analyze-only <file>    # Only analyze existing traces
+    python main.py --causal-inference       # Include causal inference RCA
+    python main.py --rca-target frontend    # Specify target service for RCA
 """
 
 import sys
@@ -22,6 +25,7 @@ import json
 import argparse
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -35,6 +39,14 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("main-pipeline")
+
+# Import causal inference modules (optional)
+try:
+    from causal_inference.root_cause_analysis import RootCauseAnalyzer
+    CAUSAL_INFERENCE_AVAILABLE = True
+except ImportError:
+    CAUSAL_INFERENCE_AVAILABLE = False
+    logger.warning("Causal inference modules not available. Install DoWhy with: pip install dowhy")
 
 
 def collect_traces(config):
@@ -219,8 +231,83 @@ def generate_adjacency_list(graph, output_file):
             f.write("\n")
 
 
-def run_complete_pipeline(config):
-    """Run the complete pipeline: trace collection + dependency analysis."""
+def run_causal_inference(traces_file: str, dependency_file: str, target_service: str, timestamp: str) -> Optional[str]:
+    """
+    Step 3: Perform causal inference root cause analysis.
+    Returns: path to RCA results file or None if failed
+    """
+    if not CAUSAL_INFERENCE_AVAILABLE:
+        logger.warning("Causal inference not available - skipping RCA")
+        return None
+    
+    logger.info("=== STEP 3: CAUSAL INFERENCE RCA ===")
+    
+    try:
+        # Initialize analyzer
+        analyzer = RootCauseAnalyzer()
+        
+        # Load data and train model
+        analyzer.load_data(traces_file, dependency_file)
+        analyzer.train_causal_model()
+        
+        # Get available services
+        available_services = list(analyzer.normal_data.columns) if analyzer.normal_data is not None else []
+        
+        # Check if target service exists
+        if target_service not in available_services:
+            logger.warning(f"Target service '{target_service}' not found in data.")
+            if available_services:
+                target_service = available_services[0]
+                logger.info(f"Using '{target_service}' as target service instead")
+            else:
+                logger.warning("No services available for RCA")
+                return None
+        
+        # Perform analyses if anomalous data is available
+        results = {}
+        if len(analyzer.anomalous_data) > 0:
+            logger.info(f"Performing RCA for service: {target_service}")
+            
+            # Single outlier analysis
+            outlier_result = analyzer.analyze_single_outlier(target_service, num_bootstrap=5)
+            results['single_outlier'] = outlier_result
+            
+            # Distribution change analysis
+            dist_result = analyzer.analyze_distribution_change(target_service, num_bootstrap=5)
+            results['distribution_change'] = dist_result
+            
+            logger.info(f"RCA completed - Outlier: {outlier_result['outlier_magnitude']:.2f}ms, "
+                       f"Distribution change: {dist_result['change_magnitude']:.2f}ms")
+        else:
+            logger.warning("No anomalous data found - skipping anomaly-specific RCA")
+        
+        # Add service summary
+        results['service_summary'] = analyzer.get_service_summary()
+        results['metadata'] = {
+            'target_service': target_service,
+            'timestamp': timestamp,
+            'normal_samples': len(analyzer.normal_data) if analyzer.normal_data is not None else 0,
+            'anomalous_samples': len(analyzer.anomalous_data) if analyzer.anomalous_data is not None else 0
+        }
+        
+        # Save results
+        output_dir = Path("output/rca")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        rca_file = output_dir / f"rca_results_{target_service}_{timestamp}.json"
+        
+        with open(rca_file, 'w') as f:
+            json.dump(results, f, indent=2, default=str)
+        
+        logger.info(f"✓ RCA results saved: {rca_file}")
+        return str(rca_file)
+        
+    except Exception as e:
+        logger.error(f"Causal inference RCA failed: {e}")
+        return None
+
+
+def run_complete_pipeline(config, enable_causal_inference=False, rca_target_service=None):
+    """Run the complete pipeline: trace collection + dependency analysis + causal inference RCA."""
     try:
         # Step 1: Collect traces from Jaeger
         traces_file, anomalous_file = collect_traces(config)
@@ -232,6 +319,13 @@ def run_complete_pipeline(config):
         # Step 2: Analyze dependencies
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_files = analyze_dependencies(traces_file, timestamp)
+        
+        # Step 3: Perform causal inference RCA if requested
+        if enable_causal_inference and rca_target_service:
+            dependency_file = output_files[0]  # Use the first output file (JSON summary)
+            rca_file = run_causal_inference(traces_file, dependency_file, rca_target_service, timestamp)
+            if rca_file:
+                output_files.append(rca_file)
         
         # Pipeline completion summary
         logger.info("=== PIPELINE COMPLETED SUCCESSFULLY ===")
@@ -257,6 +351,8 @@ Examples:
   python main.py                              # Single pipeline run
   python main.py --continuous --interval 600  # Continuous mode (10 min intervals)
   python main.py --analyze-only traces.json   # Only analyze existing traces
+  python main.py --causal-inference           # Include causal inference RCA
+  python main.py --rca-target frontend        # Specify target service for RCA
         '''
     )
     
@@ -266,6 +362,10 @@ Examples:
                        help='Interval between collections in continuous mode (seconds, default: 300)')
     parser.add_argument('--analyze-only', type=str, metavar='TRACES_FILE',
                        help='Skip trace collection and only analyze existing traces file')
+    parser.add_argument('--causal-inference', action='store_true',
+                       help='Perform causal inference analysis (RCA)')
+    parser.add_argument('--rca-target', type=str, metavar='SERVICE',
+                       help='Target service for causal inference RCA')
     
     args = parser.parse_args()
     
@@ -276,6 +376,37 @@ Examples:
             return 1
             
         try:
+            # Load traces for anomaly detection
+            with open(args.analyze_only, 'r') as f:
+                data = json.load(f)
+                
+            # Handle different trace file formats
+            if isinstance(data, dict) and 'data' in data:
+                traces = data['data']
+            elif isinstance(data, list):
+                traces = data
+            else:
+                traces = [data]
+            
+            # Initialize anomaly detector and run detection
+            config = Config()
+            anomaly_detector = AnomalyDetector(config.LATENCY_PERCENTILE)
+            
+            logger.info("Detecting anomalous traces...")
+            anomalous_traces = anomaly_detector.detect(traces)
+            logger.info(f"Found {len(anomalous_traces)} anomalous traces")
+            
+            # Save anomalous traces
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = Path("output/traces")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            anomalous_file = output_dir / f"anomalous_traces_{timestamp}.json"
+            with open(anomalous_file, 'w') as f:
+                json.dump(anomalous_traces, f, indent=2)
+            logger.info(f"Saved {len(anomalous_traces)} anomalous traces to: {anomalous_file}")
+            
+            # Run dependency analysis
             output_files = analyze_dependencies(args.analyze_only)
             logger.info("✅ Analysis completed successfully!")
             return 0
@@ -289,20 +420,31 @@ Examples:
     logger.info(f"📡 Jaeger endpoint: {config.jaeger_endpoint}")
     logger.info(f"🎯 Target service: {config.SERVICE_NAME}")
     
+    # Configure causal inference settings
+    enable_causal_inference = args.causal_inference
+    rca_target_service = args.rca_target or 'frontend'  # Default target service
+    
+    if enable_causal_inference:
+        if CAUSAL_INFERENCE_AVAILABLE:
+            logger.info(f"🧠 Causal inference RCA enabled for service: {rca_target_service}")
+        else:
+            logger.warning("🚫 Causal inference requested but DoWhy not available")
+            enable_causal_inference = False
+    
     if args.continuous:
         logger.info(f"🔄 Continuous mode enabled (interval: {args.interval}s)")
         logger.info("Press Ctrl+C to stop")
         
         try:
             while True:
-                run_complete_pipeline(config)
+                run_complete_pipeline(config, enable_causal_inference, rca_target_service)
                 logger.info(f"⏳ Waiting {args.interval} seconds until next collection...")
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             logger.info("🛑 Pipeline stopped by user")
     else:
         logger.info("🎯 Single run mode")
-        run_complete_pipeline(config)
+        run_complete_pipeline(config, enable_causal_inference, rca_target_service)
     
     return 0
 
