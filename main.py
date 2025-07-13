@@ -65,7 +65,7 @@ def collect_traces(config):
     
     # Detect anomalous traces
     logger.info("Detecting anomalous traces...")
-    anomalous_traces = anomaly_detector.detect_anomalies(traces)
+    anomalous_traces = anomaly_detector.detect(traces)
     logger.info(f"Found {len(anomalous_traces)} anomalous traces")
     
     # Save traces to files
