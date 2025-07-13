@@ -107,6 +107,9 @@ class LatencyDataProcessor:
         elif 'Client_' in operation_name:
             # Pattern: ServiceClient_Operation -> Service
             return operation_name.split('Client_')[0].replace('Service', '').lower()
+        elif 'Service_' in operation_name:
+            # Pattern: serviceNameService_Operation -> serviceName
+            return operation_name.split('Service_')[0].lower()
         else:
             # Fallback: use the operation name as is, cleaned up
             return operation_name.lower().replace('service', '')
