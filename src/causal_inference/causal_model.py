@@ -9,9 +9,12 @@ import json
 import pandas as pd
 import networkx as nx
 import numpy as np
+import pickle
+import os
 from typing import Dict, List, Optional, Tuple, Any
 import logging
 from pathlib import Path
+from datetime import datetime
 
 # DoWhy imports
 try:
@@ -123,14 +126,22 @@ class CausalGraphBuilder:
 class CausalModelTrainer:
     """Trains causal models using DoWhy/GCM for root cause analysis."""
     
-    def __init__(self, causal_graph: nx.DiGraph):
-        if not DOWHY_AVAILABLE:
-            raise ImportError("DoWhy is required for causal modeling. Install with: pip install dowhy")
+    def __init__(self, dependency_graph: nx.DiGraph):
+        """
+        Initialize the CausalModelTrainer.
         
-        self.causal_graph = causal_graph
+        Args:
+            dependency_graph: NetworkX directed graph representing service dependencies
+        """
+        self.dependency_graph = dependency_graph
+        self.causal_graph = dependency_graph.copy()
         self.causal_model = None
         self.normal_data = None
+        self.anomalous_data = None
         self.is_trained = False
+        
+        logger.info(f"Loaded dependencies for {len(self.dependency_graph.nodes)} services")
+        logger.info(f"Built causal graph with {len(self.causal_graph.nodes)} nodes and {len(self.causal_graph.edges)} edges")
     
     def prepare_data(self, latency_data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -151,6 +162,8 @@ class CausalModelTrainer:
         missing_services = graph_services - available_services
         
         if missing_services:
+            logger.warning(f"Services in graph but not in trace data: {missing_services}")
+            logger.warning(f"This may indicate missing instrumentation or service name mismatches")
             logger.info(f"Removing services without latency data: {missing_services}")
             # Remove nodes without data from the causal graph
             self.causal_graph.remove_nodes_from(missing_services)
@@ -386,7 +399,106 @@ class CausalModelTrainer:
         except Exception as e:
             logger.error(f"Error in intervention simulation: {e}")
             raise
-
+    
+    def save_model(self, model_path: str) -> None:
+        """
+        Save the trained causal model to disk.
+        
+        Args:
+            model_path: Path to save the model (without extension)
+        """
+        if not self.is_trained:
+            raise ValueError("Model not trained. Call train_model() first.")
+        
+        model_dir = Path(model_path).parent
+        model_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save model components
+        model_data = {
+            'causal_graph': self.causal_graph,
+            'normal_data': self.normal_data,
+            'is_trained': self.is_trained,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Save the causal model (DoWhy object) separately using pickle
+        with open(f"{model_path}_causal_model.pkl", 'wb') as f:
+            pickle.dump(self.causal_model, f)
+        
+        # Save other components as JSON-serializable data
+        with open(f"{model_path}_metadata.pkl", 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        logger.info(f"Saved trained causal model to {model_path}")
+    
+    def load_model(self, model_path: str) -> bool:
+        """
+        Load a trained causal model from disk.
+        
+        Args:
+            model_path: Path to load the model from (without extension)
+            
+        Returns:
+            True if model loaded successfully, False otherwise
+        """
+        try:
+            # Load causal model
+            with open(f"{model_path}_causal_model.pkl", 'rb') as f:
+                self.causal_model = pickle.load(f)
+            
+            # Load metadata
+            with open(f"{model_path}_metadata.pkl", 'rb') as f:
+                model_data = pickle.load(f)
+            
+            self.causal_graph = model_data['causal_graph']
+            self.normal_data = model_data['normal_data']
+            self.is_trained = model_data['is_trained']
+            
+            logger.info(f"Loaded trained causal model from {model_path}")
+            logger.info(f"Model trained on {len(self.normal_data)} samples with {len(self.normal_data.columns)} services")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load model from {model_path}: {e}")
+            return False
+    
+    def model_exists(self, model_path: str) -> bool:
+        """
+        Check if a model file exists.
+        
+        Args:
+            model_path: Path to check (without extension)
+            
+        Returns:
+            True if model files exist, False otherwise
+        """
+        return (os.path.exists(f"{model_path}_causal_model.pkl") and 
+                os.path.exists(f"{model_path}_metadata.pkl"))
+    
+    def get_model_info(self, model_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Get information about a saved model without loading it.
+        
+        Args:
+            model_path: Path to the model (without extension)
+            
+        Returns:
+            Dictionary with model information or None if not found
+        """
+        try:
+            with open(f"{model_path}_metadata.pkl", 'rb') as f:
+                model_data = pickle.load(f)
+            
+            return {
+                'timestamp': model_data.get('timestamp', 'Unknown'),
+                'num_services': len(model_data['normal_data'].columns),
+                'num_samples': len(model_data['normal_data']),
+                'services': list(model_data['normal_data'].columns),
+                'is_trained': model_data['is_trained']
+            }
+        except Exception as e:
+            logger.error(f"Failed to get model info from {model_path}: {e}")
+            return None
 
 def create_and_train_causal_model(dependency_file: str, normal_data: pd.DataFrame,
                                 target_service: Optional[str] = None) -> Tuple[CausalGraphBuilder, CausalModelTrainer]:

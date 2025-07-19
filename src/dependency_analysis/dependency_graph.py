@@ -24,13 +24,10 @@ class DependencyGraphBuilder:
         self.trace_count = 0
         
     def extract_service_name(self, span: Dict, processes: Dict) -> str:
-        """Extract clean service name from span."""
+        """Extract service name from span without any transformations."""
         process_id = span.get('processID', '')
         if process_id in processes:
             service_name = processes[process_id].get('serviceName', 'unknown')
-            # Clean up service name
-            service_name = service_name.replace('unknown_service:', '')
-            service_name = service_name.replace('_proc', '')
             return service_name
         return 'unknown'
     

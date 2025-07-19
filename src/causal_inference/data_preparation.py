@@ -27,7 +27,16 @@ class LatencyDataProcessor:
         """Load trace data from JSON file."""
         try:
             with open(trace_file_path, 'r') as f:
-                self.trace_data = json.load(f)
+                data = json.load(f)
+            
+            # Handle different trace file formats
+            if isinstance(data, dict) and 'data' in data:
+                self.trace_data = data['data']
+            elif isinstance(data, list):
+                self.trace_data = data
+            else:
+                self.trace_data = [data]
+            
             logger.info(f"Loaded {len(self.trace_data)} traces from {trace_file_path}")
         except Exception as e:
             logger.error(f"Error loading trace data: {e}")
@@ -59,12 +68,17 @@ class LatencyDataProcessor:
         
         for trace in self.trace_data:
             trace_id = trace['traceID']
+            processes = trace.get('processes', {})
             
             # Extract latencies for each span/service in this trace
             trace_latencies = {}
             
             for span in trace['spans']:
-                service_name = self._extract_service_name(span['operationName'])
+                service_name = self._extract_service_name(
+                    span['operationName'], 
+                    span, 
+                    processes
+                )
                 duration_us = span.get('duration', 0)  # Duration in microseconds
                 duration_ms = duration_us / 1000.0  # Convert to milliseconds
                 
@@ -98,21 +112,40 @@ class LatencyDataProcessor:
         
         return self.service_latencies
     
-    def _extract_service_name(self, operation_name: str) -> str:
-        """Extract service name from operation name."""
-        # Handle different operation name patterns
+    def _extract_service_name(self, operation_name: str, span: dict = None, processes: dict = None) -> str:
+        """
+        Extract service name without any transformations.
+        
+        Args:
+            operation_name: The operation name from the span
+            span: Optional span object for process-based extraction
+            processes: Optional processes dict for process-based extraction
+            
+        Returns:
+            Service name as-is from the trace data
+        """
+        # Try process-based extraction first (more reliable)
+        if span and processes:
+            process_id = span.get('processID', '')
+            if process_id in processes:
+                service_name = processes[process_id].get('serviceName', 'unknown')
+                return service_name
+        
+        # Fallback to operation name parsing
         if 'Server_' in operation_name:
             # Pattern: ServiceServer_Operation -> Service
-            return operation_name.split('Server_')[0].replace('Service', '').lower()
+            service_name = operation_name.split('Server_')[0].replace('Service', '').lower()
         elif 'Client_' in operation_name:
             # Pattern: ServiceClient_Operation -> Service
-            return operation_name.split('Client_')[0].replace('Service', '').lower()
+            service_name = operation_name.split('Client_')[0].replace('Service', '').lower()
         elif 'Service_' in operation_name:
             # Pattern: serviceNameService_Operation -> serviceName
-            return operation_name.split('Service_')[0].lower()
+            service_name = operation_name.split('Service_')[0].lower()
         else:
             # Fallback: use the operation name as is, cleaned up
-            return operation_name.lower().replace('service', '')
+            service_name = operation_name.lower().replace('service', '')
+        
+        return service_name
     
     def get_normal_data(self, percentile_threshold: float = 95.0) -> pd.DataFrame:
         """
@@ -137,8 +170,7 @@ class LatencyDataProcessor:
         normal_mask = total_latencies <= threshold
         normal_data = self.service_latencies[normal_mask].copy()
         
-        logger.info(f"Filtered normal data: {len(normal_data)} traces out of {len(self.service_latencies)} "
-                   f"(threshold: {threshold:.2f}ms total latency)")
+        logger.info(f"Filtered normal data: {len(normal_data)} traces out of {len(self.service_latencies)}")
         
         return normal_data
     
@@ -165,8 +197,7 @@ class LatencyDataProcessor:
         anomalous_mask = total_latencies > threshold
         anomalous_data = self.service_latencies[anomalous_mask].copy()
         
-        logger.info(f"Filtered anomalous data: {len(anomalous_data)} traces out of {len(self.service_latencies)} "
-                   f"(threshold: {threshold:.2f}ms total latency)")
+        logger.info(f"Filtered anomalous data: {len(anomalous_data)} traces out of {len(self.service_latencies)}")
         
         return anomalous_data
     

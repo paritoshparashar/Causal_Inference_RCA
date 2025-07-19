@@ -36,7 +36,7 @@ from dependency_analysis import DependencyGraphBuilder
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("main-pipeline")
 
@@ -231,10 +231,20 @@ def generate_adjacency_list(graph, output_file):
             f.write("\n")
 
 
-def run_causal_inference(traces_file: str, dependency_file: str, target_service: str, timestamp: str) -> Optional[str]:
+def run_causal_inference(traces_file: str, dependency_file: str, target_service: str, timestamp: str, 
+                        train_model: bool = False) -> Optional[str]:
     """
     Step 3: Perform causal inference root cause analysis.
-    Returns: path to RCA results file or None if failed
+    
+    Args:
+        traces_file: Path to trace file
+        dependency_file: Path to dependency file
+        target_service: Target service for RCA
+        timestamp: Timestamp for output files
+        train_model: Whether to train a new model
+        
+    Returns: 
+        path to RCA results file or None if failed
     """
     if not CAUSAL_INFERENCE_AVAILABLE:
         logger.warning("Causal inference not available - skipping RCA")
@@ -246,9 +256,11 @@ def run_causal_inference(traces_file: str, dependency_file: str, target_service:
         # Initialize analyzer
         analyzer = RootCauseAnalyzer()
         
-        # Load data and train model
-        analyzer.load_data(traces_file, dependency_file)
-        analyzer.train_causal_model()
+        # Load data with caching support
+        analyzer.load_data(traces_file, dependency_file, use_cache=not train_model)
+        
+        # Train model (will skip if loaded from cache)
+        analyzer.train_causal_model(dependency_file=dependency_file)
         
         # Get available services
         available_services = list(analyzer.normal_data.columns) if analyzer.normal_data is not None else []
@@ -276,18 +288,19 @@ def run_causal_inference(traces_file: str, dependency_file: str, target_service:
             dist_result = analyzer.analyze_distribution_change(target_service, num_bootstrap=5)
             results['distribution_change'] = dist_result
             
-            logger.info(f"RCA completed - Outlier: {outlier_result['outlier_magnitude']:.2f}ms, "
-                       f"Distribution change: {dist_result['change_magnitude']:.2f}ms")
+            logger.info("RCA completed")
         else:
             logger.warning("No anomalous data found - skipping anomaly-specific RCA")
         
-        # Add service summary
+        # Add service summary and caching info
         results['service_summary'] = analyzer.get_service_summary()
         results['metadata'] = {
             'target_service': target_service,
             'timestamp': timestamp,
             'normal_samples': len(analyzer.normal_data) if analyzer.normal_data is not None else 0,
-            'anomalous_samples': len(analyzer.anomalous_data) if analyzer.anomalous_data is not None else 0
+            'anomalous_samples': len(analyzer.anomalous_data) if analyzer.anomalous_data is not None else 0,
+            'model_cached': not train_model,
+            'cached_models': analyzer.list_cached_models()
         }
         
         # Save results
@@ -306,7 +319,7 @@ def run_causal_inference(traces_file: str, dependency_file: str, target_service:
         return None
 
 
-def run_complete_pipeline(config, enable_causal_inference=False, rca_target_service=None):
+def run_complete_pipeline(config, enable_causal_inference=False, rca_target_service=None, train_model=False):
     """Run the complete pipeline: trace collection + dependency analysis + causal inference RCA."""
     try:
         # Step 1: Collect traces from Jaeger
@@ -316,16 +329,39 @@ def run_complete_pipeline(config, enable_causal_inference=False, rca_target_serv
             logger.warning("No traces collected - pipeline stopped")
             return
         
-        # Step 2: Analyze dependencies
+        # Step 2: Analyze dependencies (conditional on causal inference settings)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_files = analyze_dependencies(traces_file, timestamp)
+        output_files = []
         
-        # Step 3: Perform causal inference RCA if requested
         if enable_causal_inference and rca_target_service:
-            dependency_file = output_files[0]  # Use the first output file (JSON summary)
-            rca_file = run_causal_inference(traces_file, dependency_file, rca_target_service, timestamp)
+            # Only run dependency analysis if we're training a new model
+            if train_model:
+                logger.info("🔄 Training mode: Generating dependency graph...")
+                output_files = analyze_dependencies(traces_file, timestamp)
+                dependency_file = output_files[0]  # Use the first output file (JSON summary)
+            else:
+                logger.info("⚡ Using cached model: Skipping dependency graph generation")
+                # Look for existing dependency file
+                dependency_dir = Path("output/analysis")
+                dependency_file = None
+                if dependency_dir.exists():
+                    for file_path in dependency_dir.glob("dependency_analysis_*.json"):
+                        dependency_file = str(file_path)
+                        break
+                
+                if not dependency_file:
+                    logger.warning("⚠️ No existing dependency file found. Running dependency analysis...")
+                    output_files = analyze_dependencies(traces_file, timestamp)
+                    dependency_file = output_files[0]
+            
+            # Step 3: Perform causal inference RCA
+            rca_file = run_causal_inference(traces_file, dependency_file, rca_target_service, timestamp, train_model=train_model)
             if rca_file:
                 output_files.append(rca_file)
+        else:
+            # If no causal inference, always run dependency analysis
+            logger.info("📊 Running dependency analysis...")
+            output_files = analyze_dependencies(traces_file, timestamp)
         
         # Pipeline completion summary
         logger.info("=== PIPELINE COMPLETED SUCCESSFULLY ===")
@@ -353,6 +389,7 @@ Examples:
   python main.py --analyze-only traces.json   # Only analyze existing traces
   python main.py --causal-inference           # Include causal inference RCA
   python main.py --rca-target frontend        # Specify target service for RCA
+  python main.py --train-model --causal-inference  # Train new model and do RCA
         '''
     )
     
@@ -366,6 +403,8 @@ Examples:
                        help='Perform causal inference analysis (RCA)')
     parser.add_argument('--rca-target', type=str, metavar='SERVICE',
                        help='Target service for causal inference RCA')
+    parser.add_argument('--train-model', action='store_true',
+                       help='Train a new causal model (default: use existing model if available)')
     
     args = parser.parse_args()
     
@@ -406,8 +445,58 @@ Examples:
                 json.dump(anomalous_traces, f, indent=2)
             logger.info(f"Saved {len(anomalous_traces)} anomalous traces to: {anomalous_file}")
             
-            # Run dependency analysis
-            output_files = analyze_dependencies(args.analyze_only)
+            # Optional: Run causal inference if requested
+            if args.causal_inference and args.rca_target:
+                if CAUSAL_INFERENCE_AVAILABLE:
+                    logger.info("🧠 Running causal inference analysis...")
+                    
+                    # Only run dependency analysis if we're training a new model
+                    if args.train_model:
+                        logger.info("🔄 Training mode: Generating dependency graph...")
+                        output_files = analyze_dependencies(args.analyze_only)
+                        
+                        # Find the dependency JSON file from output_files
+                        dependency_file = None
+                        for file_path in output_files:
+                            if file_path.endswith('dependency_analysis_*.json') or 'dependency_analysis' in file_path:
+                                dependency_file = file_path
+                                break
+                    else:
+                        logger.info("⚡ Using cached model: Skipping dependency graph generation")
+                        # Look for existing dependency file
+                        dependency_dir = Path("output/analysis")
+                        dependency_file = None
+                        if dependency_dir.exists():
+                            for file_path in dependency_dir.glob("dependency_analysis_*.json"):
+                                dependency_file = str(file_path)
+                                break
+                        
+                        if not dependency_file:
+                            logger.warning("⚠️ No existing dependency file found. Running dependency analysis...")
+                            output_files = analyze_dependencies(args.analyze_only)
+                            for file_path in output_files:
+                                if file_path.endswith('dependency_analysis_*.json') or 'dependency_analysis' in file_path:
+                                    dependency_file = file_path
+                                    break
+                    
+                    if dependency_file:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        rca_file = run_causal_inference(args.analyze_only, dependency_file, args.rca_target, timestamp, train_model=args.train_model)
+                        if rca_file:
+                            logger.info(f"✅ Causal inference completed! Results saved to: {rca_file}")
+                        else:
+                            logger.warning("⚠️ Causal inference failed or returned no results")
+                    else:
+                        logger.error("❌ Could not find dependency analysis file for causal inference")
+                else:
+                    logger.error("❌ Causal inference not available. Install DoWhy with: pip install dowhy")
+            elif args.causal_inference and not args.rca_target:
+                logger.warning("⚠️ Causal inference requested but no target service specified. Use --rca-target <service>")
+            elif not args.causal_inference:
+                # If no causal inference, always run dependency analysis
+                logger.info("📊 Running dependency analysis...")
+                output_files = analyze_dependencies(args.analyze_only)
+            
             logger.info("✅ Analysis completed successfully!")
             return 0
         except Exception as e:
@@ -426,7 +515,8 @@ Examples:
     
     if enable_causal_inference:
         if CAUSAL_INFERENCE_AVAILABLE:
-            logger.info(f"🧠 Causal inference RCA enabled for service: {rca_target_service}")
+            training_status = "enabled" if args.train_model else "disabled"
+            logger.info(f"🧠 Causal inference RCA enabled for service: {rca_target_service} (model training: {training_status})")
         else:
             logger.warning("🚫 Causal inference requested but DoWhy not available")
             enable_causal_inference = False
@@ -437,14 +527,14 @@ Examples:
         
         try:
             while True:
-                run_complete_pipeline(config, enable_causal_inference, rca_target_service)
-                logger.info(f"⏳ Waiting {args.interval} seconds until next collection...")
+                run_complete_pipeline(config, enable_causal_inference, rca_target_service, args.train_model)
+                logger.info("⏳ Waiting until next collection...")
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             logger.info("🛑 Pipeline stopped by user")
     else:
         logger.info("🎯 Single run mode")
-        run_complete_pipeline(config, enable_causal_inference, rca_target_service)
+        run_complete_pipeline(config, enable_causal_inference, rca_target_service, args.train_model)
     
     return 0
 

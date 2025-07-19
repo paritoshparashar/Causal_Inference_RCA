@@ -7,6 +7,7 @@ on microservice latency data using causal inference techniques.
 
 import pandas as pd
 import numpy as np
+import networkx as nx
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Any
 import logging
@@ -23,16 +24,61 @@ logger = logging.getLogger(__name__)
 class RootCauseAnalyzer:
     """Complete root cause analysis pipeline using causal inference."""
     
-    def __init__(self):
+    def __init__(self, model_cache_dir: str = "output/models"):
         self.data_processor = LatencyDataProcessor()
         self.graph_builder = CausalGraphBuilder()
         self.model_trainer = None
         self.normal_data = None
         self.anomalous_data = None
         self.results = {}
+        self.model_cache_dir = Path(model_cache_dir)
+        self.model_cache_dir.mkdir(parents=True, exist_ok=True)
     
-    def load_data(self, trace_file: str, dependency_file: str) -> None:
-        """Load trace and dependency data."""
+    def get_model_path(self, dependency_file: str) -> str:
+        """
+        Generate a consistent model path based on dependency structure.
+        
+        Args:
+            dependency_file: Path to dependency file
+            
+        Returns:
+            Path for model caching
+        """
+        # Use hash of dependency structure content for caching
+        import hashlib
+        
+        try:
+            with open(dependency_file, 'r') as f:
+                data = json.load(f)
+            
+            # Use the dependency details structure for stable caching
+            dep_details = data.get('dependency_details', {})
+            
+            # Sort dependencies within each service for consistent caching
+            sorted_dep_details = {}
+            for service, deps in dep_details.items():
+                sorted_dep_details[service] = sorted(deps) if isinstance(deps, list) else deps
+            
+            # Create a stable hash based on sorted dependencies
+            dep_str = json.dumps(sorted_dep_details, sort_keys=True)
+            content_hash = hashlib.md5(dep_str.encode()).hexdigest()[:8]
+            
+        except Exception as e:
+            logger.warning(f"Failed to parse dependency file for caching: {e}")
+            # Fallback to filename-based hash
+            content_hash = hashlib.md5(dependency_file.encode()).hexdigest()[:8]
+        
+        return str(self.model_cache_dir / f"causal_model_{content_hash}")
+    
+    def load_data(self, trace_file: str, dependency_file: str, use_cache: bool = True) -> None:
+        """
+        Load trace and dependency data, optionally using cached model.
+        
+        Args:
+            trace_file: Path to trace file
+            dependency_file: Path to dependency file  
+            use_cache: Whether to use cached model if available
+        """
         logger.info("Loading trace and dependency data...")
         
         # Load traces and extract latencies
@@ -52,11 +98,37 @@ class RootCauseAnalyzer:
         
         # Initialize model trainer
         self.model_trainer = CausalModelTrainer(causal_graph)
+        
+        # Try to load cached model if enabled
+        if use_cache:
+            model_path = self.get_model_path(dependency_file)
+            if self.model_trainer.model_exists(model_path):
+                logger.info("Found cached model, attempting to load...")
+                if self.model_trainer.load_model(model_path):
+                    logger.info("✅ Successfully loaded cached model")
+                    return
+                else:
+                    logger.warning("❌ Failed to load cached model, will retrain")
+        
+        logger.info("No cached model found or cache disabled, model will be trained from scratch")
     
-    def train_causal_model(self, auto_assign_mechanisms: bool = True) -> None:
-        """Train the causal model on normal data."""
+    def train_causal_model(self, auto_assign_mechanisms: bool = True, save_model: bool = True, 
+                         dependency_file: str = None) -> None:
+        """
+        Train the causal model on normal data.
+        
+        Args:
+            auto_assign_mechanisms: Whether to auto-assign causal mechanisms
+            save_model: Whether to save the trained model
+            dependency_file: Path to dependency file (for model caching)
+        """
         if not self.model_trainer:
             raise ValueError("No model trainer initialized. Call load_data() first.")
+        
+        # Skip training if model is already trained (loaded from cache)
+        if self.model_trainer.is_trained:
+            logger.info("Model already trained (loaded from cache), skipping training")
+            return
         
         logger.info("Training causal model...")
         
@@ -67,7 +139,47 @@ class RootCauseAnalyzer:
         
         self.model_trainer.train_model(self.normal_data)
         
+        # Save trained model if requested
+        if save_model and dependency_file:
+            model_path = self.get_model_path(dependency_file)
+            try:
+                self.model_trainer.save_model(model_path)
+                logger.info(f"✅ Saved trained model to cache: {model_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to save model: {e}")
+        
         logger.info("Causal model training completed")
+    
+    def clear_model_cache(self) -> None:
+        """Clear all cached models."""
+        import shutil
+        
+        if self.model_cache_dir.exists():
+            shutil.rmtree(self.model_cache_dir)
+            self.model_cache_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("Cleared model cache")
+    
+    def list_cached_models(self) -> List[Dict[str, Any]]:
+        """
+        List all cached models with their information.
+        
+        Returns:
+            List of model information dictionaries
+        """
+        cached_models = []
+        
+        # Create a temporary trainer to access get_model_info
+        temp_trainer = CausalModelTrainer(nx.DiGraph())
+        
+        for model_file in self.model_cache_dir.glob("*_metadata.pkl"):
+            model_path = str(model_file).replace("_metadata.pkl", "")
+            info = temp_trainer.get_model_info(model_path)
+            
+            if info:
+                info['model_path'] = model_path
+                cached_models.append(info)
+        
+        return cached_models
     
     def analyze_single_outlier(self, target_service: str, 
                              outlier_sample: Optional[pd.DataFrame] = None,
@@ -116,7 +228,7 @@ class RootCauseAnalyzer:
         }
         
         self.results['single_outlier'] = result
-        logger.info(f"Single outlier analysis completed. Magnitude: {outlier_magnitude:.2f}ms")
+        logger.info("Single outlier analysis completed")
         
         return result
     
@@ -162,7 +274,7 @@ class RootCauseAnalyzer:
         }
         
         self.results['distribution_change'] = result
-        logger.info(f"Distribution change analysis completed. Change: {change_magnitude:.2f}ms")
+        logger.info("Distribution change analysis completed")
         
         return result
     

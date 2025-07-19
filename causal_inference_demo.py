@@ -24,7 +24,7 @@ def setup_logging(level=logging.INFO):
     """Setup logging configuration."""
     logging.basicConfig(
         level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format='%(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
             logging.FileHandler('causal_inference.log')

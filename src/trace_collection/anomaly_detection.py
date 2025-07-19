@@ -61,7 +61,6 @@ class AnomalyDetector:
         """
         latencies = [self._calculate_trace_duration(trace) for trace in traces]
         threshold = np.percentile(latencies, self.latency_percentile)
-        logger.info(f"Latency threshold ({self.latency_percentile}th percentile): {threshold:.2f} microseconds")
         return threshold, latencies
 
     def detect(self, traces: List[Dict]) -> List[Dict]:
@@ -87,7 +86,7 @@ class AnomalyDetector:
             if trace_duration > threshold:
                 anomalous_traces.append(trace)
         
-        logger.info(f"Found {len(anomalous_traces)} anomalous traces out of {len(traces)} total traces (threshold: {threshold:.2f}μs)")
+        logger.info(f"Found {len(anomalous_traces)} anomalous traces out of {len(traces)} total traces")
         return anomalous_traces
     
     def get_normal_traces(self, traces: List[Dict]) -> List[Dict]:
