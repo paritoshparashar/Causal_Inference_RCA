@@ -54,10 +54,16 @@ from dependency_analysis import DependencyGraphBuilder
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(name)s - %(levelname)s - %(message)s'
+    level=logging.WARNING,  # Reduce overall log noise
+    format='%(levelname)s - %(message)s'  # Cleaner format
 )
 logger = logging.getLogger("main-pipeline")
+logger.setLevel(logging.INFO)  # Keep INFO for main pipeline
+
+# Quiet specific noisy modules
+logging.getLogger("causal_inference.causal_model").setLevel(logging.WARNING)
+logging.getLogger("causal_inference.root_cause_analysis").setLevel(logging.WARNING)
+logging.getLogger("causal_inference.data_preparation").setLevel(logging.WARNING)
 
 # Import causal inference modules (optional)
 try:
@@ -325,6 +331,8 @@ def run_causal_inference(traces_file: str, dependency_file: str, target_service:
         # Save results
         output_dir = Path("output/rca")
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        
         rca_file = output_dir / f"rca_results_{target_service}_{timestamp}.json"
         
         with open(rca_file, 'w') as f:
@@ -355,11 +363,11 @@ def run_complete_pipeline(config, enable_causal_inference=False, rca_target_serv
         if enable_causal_inference and rca_target_service:
             # Only run dependency analysis if we're training a new model
             if train_model:
-                logger.info("🔄 Training mode: Generating dependency graph...")
+                logger.info(" Training mode: Generating dependency graph...")
                 output_files = analyze_dependencies(traces_file, timestamp)
                 dependency_file = output_files[0]  # Use the first output file (JSON summary)
             else:
-                logger.info("⚡ Using cached model: Skipping dependency graph generation")
+                logger.info(" Using cached model: Skipping dependency graph generation")
                 # Look for existing dependency file
                 dependency_dir = Path("output/analysis")
                 dependency_file = None
@@ -369,7 +377,7 @@ def run_complete_pipeline(config, enable_causal_inference=False, rca_target_serv
                         break
                 
                 if not dependency_file:
-                    logger.warning("⚠️ No existing dependency file found. Running dependency analysis...")
+                    logger.warning(" No existing dependency file found. Running dependency analysis...")
                     output_files = analyze_dependencies(traces_file, timestamp)
                     dependency_file = output_files[0]
             
@@ -379,16 +387,16 @@ def run_complete_pipeline(config, enable_causal_inference=False, rca_target_serv
                 output_files.append(rca_file)
         else:
             # If no causal inference, always run dependency analysis
-            logger.info("📊 Running dependency analysis...")
+            logger.info(" Running dependency analysis...")
             output_files = analyze_dependencies(traces_file, timestamp)
         
         # Pipeline completion summary
         logger.info("=== PIPELINE COMPLETED SUCCESSFULLY ===")
         logger.info("Generated files:")
-        logger.info(f"  📊 Traces: {traces_file}")
-        logger.info(f"  🚨 Anomalies: {anomalous_file}")
+        logger.info(f"   Traces: {traces_file}")
+        logger.info(f"   Anomalies: {anomalous_file}")
         for output_file in output_files:
-            logger.info(f"  📈 Analysis: {output_file}")
+            logger.info(f"   Analysis: {output_file}")
         logger.info("=" * 50)
         
     except Exception as e:
@@ -454,46 +462,46 @@ LEGACY MODE:
     # Validate argument combinations
     if args.train_jaeger or args.rca_jaeger:
         if not args.jaeger_url:
-            logger.error("❌ --jaeger-url is required for Jaeger-based operations")
+            logger.error(" --jaeger-url is required for Jaeger-based operations")
             return 1
     
     if args.rca_jaeger or args.rca_file:
         if not args.model_path:
-            logger.error("❌ --model-path is required for RCA operations")
+            logger.error(" --model-path is required for RCA operations")
             return 1
         if not args.target_service:
-            logger.error("❌ --target-service is required for RCA operations")
+            logger.error(" --target-service is required for RCA operations")
             return 1
     
     # Execute based on selected mode
     try:
         if args.train_jaeger:
-            logger.info("🚀 TRAINING MODE: Jaeger Backend")
+            logger.info(" TRAINING MODE: Jaeger Backend")
             return train_model_from_jaeger(args.jaeger_url)
             
         elif args.train_file:
-            logger.info("🚀 TRAINING MODE: Local File")
+            logger.info(" TRAINING MODE: Local File")
             return train_model_from_file(args.train_file)
             
         elif args.rca_jaeger:
-            logger.info("🚀 RCA MODE: Jaeger Backend")
+            logger.info(" RCA MODE: Jaeger Backend")
             return perform_rca_from_jaeger(args.jaeger_url, args.model_path, args.target_service)
             
         elif args.rca_file:
-            logger.info("🚀 RCA MODE: Local File")
+            logger.info(" RCA MODE: Local File")
             return perform_rca_from_file(args.rca_file, args.model_path, args.target_service)
             
         elif args.continuous:
-            logger.info("🚀 LEGACY MODE: Continuous Collection")
+            logger.info(" LEGACY MODE: Continuous Collection")
             return run_legacy_continuous_mode(args)
             
         else:
-            logger.error("❌ No operation mode specified. Use --help for usage information.")
+            logger.error(" No operation mode specified. Use --help for usage information.")
             parser.print_help()
             return 1
             
     except Exception as e:
-        logger.error(f"❌ Operation failed: {e}")
+        logger.error(f" Operation failed: {e}")
         return 1
 
 
@@ -507,7 +515,7 @@ def train_model_from_jaeger(jaeger_url: str) -> int:
     Returns:
         0 if successful, 1 if failed
     """
-    logger.info(f"📡 Connecting to Jaeger at: {jaeger_url}")
+    logger.info(f" Connecting to Jaeger at: {jaeger_url}")
     
     # Configure for Jaeger collection
     config = Config()
@@ -520,7 +528,7 @@ def train_model_from_jaeger(jaeger_url: str) -> int:
     traces_file, anomalous_file = collect_traces(config)
     
     if traces_file is None:
-        logger.error("❌ Failed to collect traces from Jaeger")
+        logger.error(" Failed to collect traces from Jaeger")
         return 1
     
     # Step 2: Build dependency graph and train model
@@ -528,7 +536,7 @@ def train_model_from_jaeger(jaeger_url: str) -> int:
     
     try:
         # Generate dependency analysis
-        logger.info("📊 Analyzing dependencies and training causal model...")
+        logger.info(" Analyzing dependencies and training causal model...")
         output_files = analyze_dependencies(traces_file, timestamp)
         dependency_file = output_files[0]  # JSON summary file
         
@@ -537,15 +545,15 @@ def train_model_from_jaeger(jaeger_url: str) -> int:
         analyzer.load_data(traces_file, dependency_file, use_cache=False)
         model_path = analyzer.train_causal_model(dependency_file=dependency_file)
         
-        logger.info("✅ MODEL TRAINING COMPLETED")
-        logger.info(f"📊 Traces processed: {traces_file}")
+        logger.info(" MODEL TRAINING COMPLETED")
+        logger.info(f" Traces processed: {traces_file}")
         logger.info(f"🔗 Dependencies: {dependency_file}")
-        logger.info(f"🧠 Model saved: {model_path}")
+        logger.info(f" Model saved: {model_path}")
         
         return 0
         
     except Exception as e:
-        logger.error(f"❌ Model training failed: {e}")
+        logger.error(f" Model training failed: {e}")
         return 1
 
 
@@ -559,10 +567,10 @@ def train_model_from_file(traces_file: str) -> int:
     Returns:
         0 if successful, 1 if failed
     """
-    logger.info(f"📁 Loading traces from file: {traces_file}")
+    logger.info(f" Loading traces from file: {traces_file}")
     
     if not os.path.exists(traces_file):
-        logger.error(f"❌ Trace file not found: {traces_file}")
+        logger.error(f" Trace file not found: {traces_file}")
         return 1
     
     try:
@@ -578,13 +586,13 @@ def train_model_from_file(traces_file: str) -> int:
         else:
             traces = [data]
         
-        logger.info(f"📊 Processing {len(traces)} traces from file")
+        logger.info(f" Processing {len(traces)} traces from file")
         
         # Initialize anomaly detector and run detection
         config = Config()
         anomaly_detector = AnomalyDetector(config.LATENCY_PERCENTILE)
         
-        logger.info("🔍 Detecting anomalous traces...")
+        logger.info(" Detecting anomalous traces...")
         anomalous_traces = anomaly_detector.detect(traces)
         logger.info(f"Found {len(anomalous_traces)} anomalous traces")
         
@@ -592,14 +600,16 @@ def train_model_from_file(traces_file: str) -> int:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = Path("output/traces")
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        
         
         anomalous_file = output_dir / f"anomalous_traces_{timestamp}.json"
         with open(anomalous_file, 'w') as f:
             json.dump(anomalous_traces, f, indent=2)
-        logger.info(f"💾 Saved anomalous traces: {anomalous_file}")
+        logger.info(f" Saved anomalous traces: {anomalous_file}")
         
         # Generate dependency analysis and train model
-        logger.info("📊 Analyzing dependencies and training causal model...")
+        logger.info(" Analyzing dependencies and training causal model...")
         output_files = analyze_dependencies(traces_file, timestamp)
         dependency_file = output_files[0]  # JSON summary file
         
@@ -609,16 +619,16 @@ def train_model_from_file(traces_file: str) -> int:
         analyzer.train_causal_model(dependency_file=dependency_file)
         model_path = analyzer.get_model_path(dependency_file)
         
-        logger.info("✅ MODEL TRAINING COMPLETED")
-        logger.info(f"📁 Input traces: {traces_file}")
-        logger.info(f"🚨 Anomalous traces: {anomalous_file}")
+        logger.info(" MODEL TRAINING COMPLETED")
+        logger.info(f" Input traces: {traces_file}")
+        logger.info(f" Anomalous traces: {anomalous_file}")
         logger.info(f"🔗 Dependencies: {dependency_file}")
-        logger.info(f"🧠 Model saved: {model_path}")
+        logger.info(f" Model saved: {model_path}")
         
         return 0
         
     except Exception as e:
-        logger.error(f"❌ Model training failed: {e}")
+        logger.error(f" Model training failed: {e}")
         return 1
 
 
@@ -634,13 +644,13 @@ def perform_rca_from_jaeger(jaeger_url: str, model_path: str, target_service: st
     Returns:
         0 if successful, 1 if failed
     """
-    logger.info(f"🎯 RCA Analysis - Target: {target_service}")
-    logger.info(f"📡 Jaeger URL: {jaeger_url}")
-    logger.info(f"🧠 Model path: {model_path}")
+    logger.info(f" RCA Analysis - Target: {target_service}")
+    logger.info(f" Jaeger URL: {jaeger_url}")
+    logger.info(f" Model path: {model_path}")
     
     # Validate model exists
     if not os.path.exists(model_path):
-        logger.error(f"❌ Model file not found: {model_path}")
+        logger.error(f" Model file not found: {model_path}")
         return 1
     
     # Configure for Jaeger collection
@@ -654,7 +664,7 @@ def perform_rca_from_jaeger(jaeger_url: str, model_path: str, target_service: st
         traces_file, anomalous_file = collect_traces(config)
         
         if traces_file is None:
-            logger.error("❌ Failed to collect traces from Jaeger")
+            logger.error(" Failed to collect traces from Jaeger")
             return 1
         
         # Step 2: Perform RCA using cached model
@@ -669,7 +679,7 @@ def perform_rca_from_jaeger(jaeger_url: str, model_path: str, target_service: st
                 break
         
         if not dependency_file:
-            logger.warning("⚠️ No existing dependency file found. Generating one...")
+            logger.warning(" No existing dependency file found. Generating one...")
             output_files = analyze_dependencies(traces_file, timestamp)
             dependency_file = output_files[0]
         
@@ -677,17 +687,17 @@ def perform_rca_from_jaeger(jaeger_url: str, model_path: str, target_service: st
         rca_file = run_causal_inference(traces_file, dependency_file, target_service, timestamp, train_model=False)
         
         if rca_file:
-            logger.info("✅ RCA ANALYSIS COMPLETED")
-            logger.info(f"📊 Fresh traces: {traces_file}")
-            logger.info(f"🚨 Anomalies: {anomalous_file}")
-            logger.info(f"🎯 RCA results: {rca_file}")
+            logger.info(" RCA ANALYSIS COMPLETED")
+            logger.info(f" Fresh traces: {traces_file}")
+            logger.info(f" Anomalies: {anomalous_file}")
+            logger.info(f" RCA results: {rca_file}")
             return 0
         else:
-            logger.error("❌ RCA analysis failed")
+            logger.error(" RCA analysis failed")
             return 1
             
     except Exception as e:
-        logger.error(f"❌ RCA analysis failed: {e}")
+        logger.error(f" RCA analysis failed: {e}")
         return 1
 
 
@@ -703,17 +713,17 @@ def perform_rca_from_file(traces_file: str, model_path: str, target_service: str
     Returns:
         0 if successful, 1 if failed
     """
-    logger.info(f"🎯 RCA Analysis - Target: {target_service}")
-    logger.info(f"📁 Traces file: {traces_file}")
-    logger.info(f"🧠 Model path: {model_path}")
+    logger.info(f" RCA Analysis - Target: {target_service}")
+    logger.info(f" Traces file: {traces_file}")
+    logger.info(f" Model path: {model_path}")
     
     # Validate inputs
     if not os.path.exists(traces_file):
-        logger.error(f"❌ Trace file not found: {traces_file}")
+        logger.error(f" Trace file not found: {traces_file}")
         return 1
         
     if not os.path.exists(model_path):
-        logger.error(f"❌ Model file not found: {model_path}")
+        logger.error(f" Model file not found: {model_path}")
         return 1
     
     try:
@@ -729,13 +739,13 @@ def perform_rca_from_file(traces_file: str, model_path: str, target_service: str
         else:
             traces = [data]
         
-        logger.info(f"📊 Processing {len(traces)} traces")
+        logger.info(f" Processing {len(traces)} traces")
         
         # Run anomaly detection
         config = Config()
         anomaly_detector = AnomalyDetector(config.LATENCY_PERCENTILE)
         
-        logger.info("🔍 Detecting anomalous traces...")
+        logger.info(" Detecting anomalous traces...")
         anomalous_traces = anomaly_detector.detect(traces)
         logger.info(f"Found {len(anomalous_traces)} anomalous traces")
         
@@ -743,6 +753,8 @@ def perform_rca_from_file(traces_file: str, model_path: str, target_service: str
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = Path("output/traces")
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        
         
         anomalous_file = output_dir / f"anomalous_traces_{timestamp}.json"
         with open(anomalous_file, 'w') as f:
@@ -758,7 +770,7 @@ def perform_rca_from_file(traces_file: str, model_path: str, target_service: str
                 break
         
         if not dependency_file:
-            logger.warning("⚠️ No existing dependency file found. Generating one...")
+            logger.warning(" No existing dependency file found. Generating one...")
             output_files = analyze_dependencies(traces_file, timestamp)
             dependency_file = output_files[0]
         
@@ -766,17 +778,17 @@ def perform_rca_from_file(traces_file: str, model_path: str, target_service: str
         rca_file = run_causal_inference(traces_file, dependency_file, target_service, timestamp, train_model=False)
         
         if rca_file:
-            logger.info("✅ RCA ANALYSIS COMPLETED")
-            logger.info(f"📁 Input traces: {traces_file}")
-            logger.info(f"🚨 Anomalies: {anomalous_file}")
-            logger.info(f"🎯 RCA results: {rca_file}")
+            logger.info(" RCA ANALYSIS COMPLETED")
+            logger.info(f" Input traces: {traces_file}")
+            logger.info(f" Anomalies: {anomalous_file}")
+            logger.info(f" RCA results: {rca_file}")
             return 0
         else:
-            logger.error("❌ RCA analysis failed")
+            logger.error(" RCA analysis failed")
             return 1
             
     except Exception as e:
-        logger.error(f"❌ RCA analysis failed: {e}")
+        logger.error(f" RCA analysis failed: {e}")
         return 1
 
 
@@ -785,21 +797,21 @@ def run_legacy_continuous_mode(args) -> int:
     Legacy continuous collection mode.
     """
     config = Config()
-    logger.info("🚀 Starting Legacy Continuous Mode")
-    logger.info(f"📡 Jaeger endpoint: {config.jaeger_endpoint}")
-    logger.info(f"🔄 Interval: {args.interval}s")
+    logger.info(" Starting Legacy Continuous Mode")
+    logger.info(f" Jaeger endpoint: {config.jaeger_endpoint}")
+    logger.info(f" Interval: {args.interval}s")
     logger.info("Press Ctrl+C to stop")
     
     try:
         while True:
             run_complete_pipeline(config, False, None, False)
-            logger.info("⏳ Waiting until next collection...")
+            logger.info(" Waiting until next collection...")
             time.sleep(args.interval)
     except KeyboardInterrupt:
-        logger.info("🛑 Pipeline stopped by user")
+        logger.info(" Pipeline stopped by user")
         return 0
     except Exception as e:
-        logger.error(f"❌ Continuous mode failed: {e}")
+        logger.error(f" Continuous mode failed: {e}")
         return 1
 
 
@@ -878,6 +890,8 @@ def run_causal_inference(traces_file: str, dependency_file: str, target_service:
         # Save results
         output_dir = Path("output/rca")
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        
         rca_file = output_dir / f"rca_results_{target_service}_{timestamp}.json"
         
         with open(rca_file, 'w') as f:

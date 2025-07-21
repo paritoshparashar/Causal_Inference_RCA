@@ -19,24 +19,26 @@ class ServiceConfig:
 
 class ServiceTopology:
     """
-    Manages the 10-service microservice topology with realistic dependencies.
+    Manages the 12-service microservice topology with realistic e-commerce dependencies.
     
-    Architecture:
+    Architecture (More Complex - Realistic E-commerce Flow):
                         frontend (100ms)
                            ↓
                     api_gateway (50ms)
-                   ↙      ↓        ↘
-            auth_svc  order_svc  search_svc
-             (30ms)    (40ms)     (35ms)
-               ↓         ↓         ↓
-            user_db   payment_svc product_db
-             (20ms)     (25ms)    (15ms)
-                          ↓
-                    inventory_svc (30ms)
-                          ↓
-                    shipping_svc (20ms)
-                          ↓
-                   notification_svc (10ms)
+              ↙        ↓         ↓        ↘
+      auth_svc    order_svc   search_svc  user_profile_svc
+       (30ms)      (40ms)      (35ms)       (25ms)
+         ↓           ↓           ↓            ↓
+      user_db    payment_svc   product_db   user_db (shared)
+       (20ms)      (25ms)      (15ms)      (shared)
+         ↓           ↓           ↓
+    session_cache inventory_svc ←┘ (stock validation)
+       (5ms)        (30ms)
+                      ↓
+                 shipping_svc (20ms)
+                 ↙         ↘
+         tracking_svc   notification_svc
+           (15ms)          (10ms)
     """
     
     def __init__(self):
@@ -56,13 +58,13 @@ class ServiceTopology:
                 name='api_gateway',
                 baseline_latency_ms=50.0,
                 operation_name='gateway_process',
-                downstream_services=['auth_svc', 'order_svc', 'search_svc']
+                downstream_services=['auth_svc', 'order_svc', 'search_svc', 'user_profile_svc']
             ),
             'auth_svc': ServiceConfig(
                 name='auth_svc',
                 baseline_latency_ms=30.0,
                 operation_name='authenticate_user',
-                downstream_services=['user_db']
+                downstream_services=['user_db', 'session_cache']
             ),
             'order_svc': ServiceConfig(
                 name='order_svc',
@@ -74,25 +76,37 @@ class ServiceTopology:
                 name='search_svc',
                 baseline_latency_ms=35.0,
                 operation_name='search_products',
-                downstream_services=['product_db']
+                downstream_services=['product_db', 'inventory_svc']  # Also checks stock
+            ),
+            'user_profile_svc': ServiceConfig(
+                name='user_profile_svc',
+                baseline_latency_ms=25.0,
+                operation_name='get_user_profile',
+                downstream_services=['user_db']  # Shared with auth_svc
             ),
             'payment_svc': ServiceConfig(
                 name='payment_svc',
                 baseline_latency_ms=25.0,
                 operation_name='process_payment',
-                downstream_services=['inventory_svc']
+                downstream_services=['inventory_svc']  # Reserve inventory
             ),
             'inventory_svc': ServiceConfig(
                 name='inventory_svc',
                 baseline_latency_ms=30.0,
                 operation_name='check_inventory',
-                downstream_services=['shipping_svc']
+                downstream_services=['shipping_svc']  # Convergence point
             ),
             'shipping_svc': ServiceConfig(
                 name='shipping_svc',
                 baseline_latency_ms=20.0,
                 operation_name='arrange_shipping',
-                downstream_services=['notification_svc']
+                downstream_services=['tracking_svc', 'notification_svc']  # Fan-out
+            ),
+            'tracking_svc': ServiceConfig(
+                name='tracking_svc',
+                baseline_latency_ms=15.0,
+                operation_name='create_tracking',
+                downstream_services=[]  # Leaf node
             ),
             'notification_svc': ServiceConfig(
                 name='notification_svc',
@@ -104,13 +118,19 @@ class ServiceTopology:
                 name='user_db',
                 baseline_latency_ms=20.0,
                 operation_name='query_user_data',
-                downstream_services=[]  # Leaf node
+                downstream_services=[]  # Shared resource - leaf node
             ),
             'product_db': ServiceConfig(
                 name='product_db',
                 baseline_latency_ms=15.0,
                 operation_name='query_product_data',
                 downstream_services=[]  # Leaf node
+            ),
+            'session_cache': ServiceConfig(
+                name='session_cache',
+                baseline_latency_ms=5.0,
+                operation_name='manage_session',
+                downstream_services=[]  # Fast cache - leaf node
             )
         }
     
@@ -176,7 +196,13 @@ class ServiceTopology:
     
     def get_topology_summary(self) -> str:
         """Get a text summary of the topology structure."""
-        summary = ["Service Topology (10 services):"]
+        summary = ["Service Topology (12 services - Complex E-commerce Flow):"]
+        summary.append("")
+        summary.append("Key Features:")
+        summary.append("• Shared Resources: user_db used by auth_svc & user_profile_svc")
+        summary.append("• Convergence Points: inventory_svc called by payment_svc & search_svc")
+        summary.append("• Fan-out Points: api_gateway (4 services), shipping_svc (2 services)")
+        summary.append("• Business Logic: Realistic e-commerce flow with cross-service dependencies")
         summary.append("")
         
         def _add_service_info(service: str, indent: int = 0):
