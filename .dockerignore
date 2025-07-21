@@ -1,0 +1,43 @@
+# Docker ignore file for Causal Inference RCA
+.git
+.gitignore
+.dockerignore
+README.md
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Output files (these will be mounted as volumes)
+output/
+traces/
+models/
+
+# Development files
+test_*.py
+*_test.py
